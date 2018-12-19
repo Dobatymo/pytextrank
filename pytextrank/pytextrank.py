@@ -3,8 +3,6 @@
 
 from collections import namedtuple
 from datasketch import MinHash
-from graphviz import Digraph
-import hashlib
 import json
 import math
 import networkx as nx
@@ -17,7 +15,7 @@ import string
 
 DEBUG = False # True
 
-ParsedGraf = namedtuple('ParsedGraf', 'id, sha1, graf')
+ParsedGraf = namedtuple('ParsedGraf', 'id, graf')
 WordNode = namedtuple('WordNode', 'word_id, raw, root, pos, keep, idx')
 RankedLexeme = namedtuple('RankedLexeme', 'text, rank, ids, pos, count')
 SummarySent = namedtuple('SummarySent', 'dist, idx, text')
@@ -55,14 +53,11 @@ def filter_quotes (text, is_email=True):
     """
     filter the quoted text out of a message
     """
-    global DEBUG
+
     global PAT_FORWARD, PAT_REPLIED, PAT_UNSUBSC
 
     if is_email:
         text = filter(lambda x: x in string.printable, text)
-
-        if DEBUG:
-            print("text:", text)
 
         # strip off quoted text in a forward
         m = PAT_FORWARD.split(text, re.M)
@@ -190,14 +185,10 @@ def parse_graf (doc_id, graf_text, base_idx, spacy_nlp=None):
 
     markup = []
     new_base_idx = base_idx
-    doc = spacy_nlp(graf_text, parse=True)
+    doc = spacy_nlp(graf_text)
 
     for span in doc.sents:
         graf = []
-        digest = hashlib.sha1()
-
-        if DEBUG:
-            print(span)
 
         # build a word list, on which to apply corrections
         word_list = []
@@ -231,21 +222,17 @@ def parse_graf (doc_id, graf_text, base_idx, spacy_nlp=None):
             if pos_family in POS_KEEPS:
                 word = word._replace(word_id=get_word_id(word.root), keep=1)
 
-            digest.update(word.root.encode('utf-8'))
-
             # schema: word_id, raw, root, pos, keep, idx
-            if DEBUG:
-                print(word)
 
             graf.append(list(word))
             new_base_idx += 1
 
-        markup.append(ParsedGraf(id=doc_id, sha1=digest.hexdigest(), graf=graf))
+        markup.append(ParsedGraf(id=doc_id, graf=graf))
 
     return markup, new_base_idx
 
 
-def parse_doc (json_iter):
+def parse_doc(json_iter):
     """
     parse one document to prep for TextRank
     """
@@ -255,8 +242,6 @@ def parse_doc (json_iter):
         base_idx = 0
 
         for graf_text in filter_quotes(meta["text"], is_email=False):
-            if DEBUG:
-                print("graf_text:", graf_text)
 
             grafs, new_base_idx = parse_graf(meta["id"], graf_text, base_idx)
             base_idx = new_base_idx
@@ -285,43 +270,42 @@ def get_tiles (graf, size=3):
                 yield (w0.root, w1.root,)
 
 
-def build_graph (json_iter):
+def build_graph(paragraphs):
     """
     construct the TextRank graph from parsed paragraphs
     """
-    global DEBUG, WordNode
+
     graph = nx.DiGraph()
 
-    for meta in json_iter:
-        if DEBUG:
-            print(meta["graf"])
+    for paragraph in paragraphs:
 
-        for pair in get_tiles(map(WordNode._make, meta["graf"])):
-            if DEBUG:
-                print(pair)
+        for pair in get_tiles(map(WordNode._make, paragraph)):
 
             for word_id in pair:
                 if not graph.has_node(word_id):
                     graph.add_node(word_id)
 
             try:
-                graph.edge[pair[0]][pair[1]]["weight"] += 1.0
+                graph.edges[pair[0], pair[1]]["weight"] += 1.0 # [pair[0]][pair[1]] doesn't work...
             except KeyError:
                 graph.add_edge(pair[0], pair[1], weight=1.0)
 
     return graph
 
 
-def write_dot (graph, ranks, path="graph.dot"):
+def write_dot(graph, ranks, path="graph.dot"):
     """
     output the graph in Dot file format
     """
+
+    from graphviz import Digraph
+
     dot = Digraph()
 
-    for node in graph.nodes():
+    for node in graph.nodes:
         dot.node(node, "%s %0.3f" % (node, ranks[node]))
 
-    for edge in graph.edges():
+    for edge in graph.edges:
         dot.edge(edge[0], edge[1], constraint="false")
 
     with open(path, 'w') as f:
@@ -342,11 +326,11 @@ def render_ranks (graph, ranks, dot_file="graph.dot"):
     #plt.show()
 
 
-def text_rank (path):
+def text_rank(paragraphs):
     """
     run the TextRank algorithm
     """
-    graph = build_graph(json_iter(path))
+    graph = build_graph(paragraphs)
     ranks = nx.pagerank(graph)
 
     return graph, ranks
@@ -418,7 +402,7 @@ def enumerate_chunks (phrase, spacy_nlp):
     if (len(phrase) > 1):
         found = False
         text = " ".join([rl.text for rl in phrase])
-        doc = spacy_nlp(text.strip(), parse=True)
+        doc = spacy_nlp(text.strip())
 
         for np in doc.noun_chunks:
             if np.text != text:
